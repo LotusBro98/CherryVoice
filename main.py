@@ -22,12 +22,18 @@ encoder = Model(sample_rate)
 
 spectrum, noise, voice, main_freq = model.encode_voice(encoder, track)
 
-spectrum2 = model.decode_voice(encoder, noise, voice, main_freq)
+# main_freq *= 1.0
+# voice1 = cv.resize(voice, None, None, 1.4, 1)[:,:voice.shape[-1]]
+# voice[:] = 0
+# voice[:,:voice1.shape[-1]] = voice1
 
-for data in [np.abs(spectrum), np.abs(voice), np.abs(noise), np.abs(spectrum2)]:
-    plt.figure(figsize=(20, 20))
-    plt.imshow(data.T[::-1])
-    plt.show()
+track2 = model.decode_voice(encoder, noise, voice, main_freq, sample_rate, len(track))
+spectrum2, _, _, _ = model.encode_voice(encoder, track2)
+
+f, ax = plt.subplots(4, 1, figsize=(40, 20))
+for i, data in enumerate([np.abs(spectrum), np.abs(voice), np.abs(noise), np.abs(spectrum2)]):
+    ax[i].imshow(data.T[::-1])
+plt.show()
 
 plt.plot(np.abs(spectrum[500]))
 plt.plot(np.abs(noise[500]))
@@ -44,12 +50,12 @@ plt.plot(main_freq)
 plt.show()
 
 
-track2 = model.restore(encoder, [spectrum2], len(track))[0]
+# track2 = model.restore(encoder, [spectrum2], len(track))[0]
 
 # spectrum = window_fourier(track, sample_rate)
 
-plt.plot(track[100000:101000])
-plt.plot(track2[100000:101000])
+plt.plot(track[200000:201000])
+plt.plot(track2[200000:201000])
 # plt.plot(track)
 # plt.plot(track2)
 plt.show()

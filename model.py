@@ -4,10 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 TIME_RES = 0.01
-FREQ_RES = 10
+FREQ_RES = 30
 MAX_FREQ = 15000
-MIN_VOICE_FREQ = 200
-MIN_VOICE_FREQ_AVG = 400
+MIN_VOICE_FREQ = 300
+MIN_VOICE_FREQ_AVG = 300
 MAX_PEAKS = 50
 
 
@@ -39,6 +39,7 @@ def get_F_kernel(sample_rate):
     F *= np.sin(np.linspace(0, np.pi, F.shape[-1]))
     F = np.concatenate([np.real(F), np.imag(F)], axis=0)
     F /= np.linalg.norm(F, axis=-1, keepdims=True)
+    F /= np.sqrt(n_samples)
     F = np.expand_dims(F, axis=-1)
     F = np.transpose(F, (1, 2, 0))
 
@@ -47,6 +48,7 @@ def get_F_kernel(sample_rate):
     F_T = np.exp(-2j * np.pi / n_samples_T * kx_T)
     F_T = np.concatenate([np.real(F_T), np.imag(F_T)], axis=0)
     F_T /= np.linalg.norm(F_T, axis=0, keepdims=True)
+    F_T *= np.sqrt(n_samples_T)
     F_T = np.expand_dims(F_T, axis=-1)
     F_T = np.transpose(F_T, (1, 2, 0))
 
@@ -66,7 +68,7 @@ def get_F_kernel(sample_rate):
     return F, F_T
 
 
-def find_peaks(spectrum, k=0.1):
+def find_peaks(spectrum, k=0.3):
     pool_size = int(MIN_VOICE_FREQ / FREQ_RES)
     avg_pool_size = int(MIN_VOICE_FREQ_AVG / FREQ_RES)
 
@@ -86,7 +88,10 @@ def find_peaks(spectrum, k=0.1):
 
     voice *= frac
 
-    mask = tf.cast((spec_abs == max_pool) & (voice > noise), tf.float32)
+    noise *= 1 - frac
+
+    mask = tf.cast(spec_abs == max_pool, tf.float32)
+    voice *= tf.cast(tf.reduce_sum(tf.abs(voice), axis=-2, keepdims=True) > 1, tf.float32)
 
     voice = tf.transpose(voice, (0, 2, 1))
     noise = tf.transpose(noise, (0, 2, 1))
@@ -107,11 +112,13 @@ def find_main_freq(peaks):
     delta1 = delta.copy()
     delta1[np.abs(delta) < FREQ_RES] = np.nan
     main_freq = np.nanmedian(delta1, axis=-1)
+    main_freq[np.isnan(main_freq)] = 0
 
-    delta[np.abs(delta - np.expand_dims(main_freq, -1)) > 5 * FREQ_RES] = 0
-    main_freq = np.exp(np.sum(np.log(1 + delta), axis=-1) / (np.sum(delta != 0, axis=-1) + 1e-1)) - 1
+    delta[np.abs(delta - np.expand_dims(main_freq, -1)) > 2 * FREQ_RES] = 0
+    main_freq = np.sum(delta, axis=-1) / (np.sum(delta != 0, axis=-1) + 1e-4)
 
-    main_freq = medfilt(main_freq, 3)
+    main_freq = medfilt(main_freq, 7)
+    main_freq = tf.nn.avg_pool1d(np.expand_dims(main_freq, (0,-1)), 15, 1, "SAME")[0,:,0]
     return main_freq
 
 
@@ -127,21 +134,36 @@ def encode_voice(encoder, track):
 
     return spectrum, noise, voice, main_freq
 
-def decode_voice(encoder, noise, voice, main_freq):
-    noise = noise * (np.random.normal(size=noise.shape) + 1j * np.random.normal(size=noise.shape)) / np.sqrt(2)
+def decode_voice(encoder, noise, voice, main_freq, sample_rate, track_len):
+    noise = noise * np.random.uniform(0, 2, size=noise.shape)
+    noise = noise * np.exp(2j * np.pi * np.random.uniform(0, 1, size=noise.shape))
 
-    peaks = np.zeros_like(voice)
-    main_freq = main_freq / FREQ_RES
-    indices = np.int32(np.outer(main_freq, np.arange(1, MAX_PEAKS)))
-    indices = np.clip(indices, 0, peaks.shape[-1] - 1)
-    for i in range(peaks.shape[0]):
-        peaks[i, indices[i]] = 1
+    track = np.zeros((track_len,))
 
-    peaks = peaks * np.exp(2j * np.pi * np.random.uniform(0, 1, size=peaks.shape))
-    voice = voice * peaks
+    t = np.linspace(0, 1, track_len)
+    n = np.linspace(0, 1, voice.shape[0])
 
-    spectrum = voice + noise
-    return spectrum
+    print(t.shape)
+    print(n.shape)
+
+    dt = 1 / sample_rate
+    for i in range(1, MAX_PEAKS):
+        freq = i * main_freq
+        freq_idx = np.clip(np.int32(freq / FREQ_RES), 0, voice.shape[-1] - 1)
+        harm = tf.gather(voice, freq_idx, axis=-1, batch_dims=1)
+        freq = np.interp(t, n, freq)
+        harm = np.interp(t, n, harm)
+        phase = 2 * np.pi * np.cumsum(freq * dt)
+        harm = harm * np.sin(phase + np.random.uniform(0, 2 * np.pi))
+        track += harm
+
+    noise_track = restore(encoder, [noise], track_len)[0]
+
+    track += noise_track
+
+    print(track.shape)
+
+    return track
 
 
 
